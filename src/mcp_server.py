@@ -17,7 +17,7 @@ import wave, simpleaudio as sa
 import sounddevice as sd
 from mcp.server import Server
 
-from src.voicevox_client import VoicevoxClient
+from .voicevox_client import VoicevoxClient
 
 
 class MCPServer(Server):
