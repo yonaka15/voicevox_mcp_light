@@ -16,7 +16,7 @@ from mcp.server.models import InitializationOptions
 from src.mcp_server import MCPServer
 
 # ロギングの設定
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)  # DEBUG レベルに変更
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +69,7 @@ def main():
     server = MCPServer(
         host=args.host,
         port=args.port,
-        speaker=args.speaker
+        default_speaker=args.speaker
     )
     
     # サーバーの実行

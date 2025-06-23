@@ -11,7 +11,7 @@ import os
 import wave
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, Optional, List # List を追加
+from typing import Any, Dict, Optional, List, Union # Union を追加
 import wave, simpleaudio as sa
 import base64 # base64 を追加
 
@@ -76,12 +76,12 @@ class MCPServer(Server):
         
         # ロガーの設定
         logger = logging.getLogger("mcp_server")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)  # DEBUG レベルに変更
         
         # ファイルハンドラの設定
         log_file = os.path.join(log_dir, f"mcp_server_{datetime.now().strftime('%Y%m%d')}.log")
         file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.INFO)
+        file_handler.setLevel(logging.DEBUG)  # DEBUG レベルに変更
         
         # フォーマッタの設定
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -146,6 +146,15 @@ class MCPServer(Server):
                     }
                 ),
                 types.Tool(
+                    name="speakers",
+                    description="利用可能な話者の一覧を取得します",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                ),
+                types.Tool(
                     name="audio_query",
                     description="テキストから音声合成用のクエリを生成します",
                     inputSchema={
@@ -155,17 +164,11 @@ class MCPServer(Server):
                             "speaker": {"type": "string", "description": "（オプショナル）話者ID"}
                         },
                         "required": ["text"]
-                    },
-                    outputSchema={ # outputSchema を追加
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "object", "description": "音声合成用クエリ"}
-                        }
                     }
                 ),
                 types.Tool(
-                    name="synthesis",
-                    description="音声合成用のクエリからWAV音声データを生成します",
+                    name="synthesizeFromQueryAndPlay",
+                    description="音声クエリからWAVデータを生成して再生します",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -173,47 +176,17 @@ class MCPServer(Server):
                             "speaker": {"type": "string", "description": "（オプショナル）話者ID"}
                         },
                         "required": ["query"]
-                    },
-                    outputSchema={ # outputSchema を追加
-                        "type": "object",
-                        "properties": {
-                            "audio_content": {"type": "string", "format": "byte", "description": "Base64エンコードされたWAV音声データ"}
-                        }
                     }
                 ),
-                types.Tool(
-                    name="speakers",
-                    description="利用可能な話者の一覧を取得します",
-                    inputSchema={}, # inputSchema を空のobjectに変更
-                    outputSchema={ # outputSchema を追加
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "speaker_uuid": {"type": "string"},
-                                "styles": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {"type": "string"},
-                                            "id": {"type": "integer"}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                )
             ]
         
         @self.call_tool()
-        async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.Content]: # 戻り値の型ヒントを修正
+        async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]: # 戻り値の型ヒントを修正
             """
             指定されたツールを実行します。
             """
             self.logger.info(f"Tool called: {name} with arguments: {arguments}")
+            self.logger.debug(f"Entering handle_call_tool: {name}")  # DEBUGログ追加
             try:
                 if name == "synthesizeAndPlay":
                     message = arguments.get("message", "")
@@ -232,37 +205,40 @@ class MCPServer(Server):
                         return [types.TextContent(type="text", text="Text is empty")]
                     query_result = self.voicevox_client.audio_query(text=text, speaker=speaker)
                     # MCPでは通常、JSONシリアライズ可能な形式で返す
-                    return [types.ObjectContent(type="object", object=query_result)]
+                    import json
+                    return [types.TextContent(type="text", text=json.dumps(query_result, ensure_ascii=False, indent=2))]
 
-                elif name == "synthesis":
+                elif name == "synthesizeFromQueryAndPlay":
                     query = arguments.get("query")
                     speaker = arguments.get("speaker")
                     if not query:
-                        self.logger.warning("No query provided for synthesis")
+                        self.logger.warning("No query provided for synthesizeFromQueryAndPlay")
                         return [types.TextContent(type="text", text="Query is not provided")]
                     
-                    # queryが文字列で渡された場合、辞書に変換する必要があるか確認
-                    # MCPクライアントからの入力形式に依存
+                    # queryが文字列で渡された場合、辞書に変換
                     if isinstance(query, str):
                         import json
                         try:
                             query = json.loads(query)
                         except json.JSONDecodeError:
-                            self.logger.error("Invalid JSON format for query in synthesis")
+                            self.logger.error("Invalid JSON format for query in synthesizeFromQueryAndPlay")
                             return [types.TextContent(type="text", text="Invalid JSON format for query")]
 
+                    # WAVデータ生成
                     wav_bytes = self.voicevox_client.synthesis(query=query, speaker=speaker)
-                    wav_base64 = base64.b64encode(wav_bytes).decode('utf-8')
-                    # Base64エンコードされた音声データを返す
-                    # types.BinaryContent があればそちらを使うのが適切かもしれないが、MCPのバージョンや詳細仕様による
-                    # ここでは ObjectContent を使い、キーを指定して返す
-                    return [types.ObjectContent(type="object", object={"audio_content": wav_base64})]
-
+                    
+                    # 音声再生
+                    await self._play_audio(wav_bytes)
+                    
+                    return [types.TextContent(type="text", text="音声クエリからの合成と再生が完了しました")]
 
                 elif name == "speakers":
                     speakers_list = self.voicevox_client.get_speakers()
                     # MCPでは通常、JSONシリアライズ可能な形式で返す
-                    return [types.ObjectContent(type="object", object=speakers_list)] # types.ArrayContent があればより適切
+                    # スキーマに合わせてobject形式で返す
+                    import json
+                    result = {"speakers": speakers_list}
+                    return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
                 else:
                     self.logger.warning(f"Unknown tool: {name}")
